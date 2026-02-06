@@ -1,0 +1,24 @@
+# Expense Tracker - Python/Streamlit
+
+## Dependencies
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+## Data files (personal data)
+expenses.csv
+categories.json
+
+## IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Import scripts (temporary)
+import_expenses.py
