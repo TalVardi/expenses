@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from utils import load_expenses, save_expenses, apply_custom_css, CATEGORIES, format_currency
+from utils import load_expenses, save_expenses, apply_custom_css, load_categories, format_currency
 
 st.set_page_config(page_title="כל ההוצאות", page_icon="📋", layout="wide")
 apply_custom_css()
 
-st.title("כל ההוצאות")
+st.title("📋 כל ההוצאות")
 
 df = load_expenses()
 
@@ -20,8 +20,15 @@ else:
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            categories = list(df['קטגוריה'].unique())
-            selected_categories = st.multiselect("סינון לפי קטגוריה", options=categories)
+            # Load categories from file to ensure up-to-date list
+            all_categories = load_categories()
+            # Also include any categories present in data but not in list
+            data_cats = df['קטגוריה'].unique().tolist()
+            # Filter out non-string or empty values to prevent sort errors
+            valid_data_cats = [x for x in data_cats if isinstance(x, str) and x.strip()]
+            combined_cats = sorted(list(set(all_categories + valid_data_cats)))
+            
+            selected_categories = st.multiselect("סינון לפי קטגוריה", options=combined_cats)
             
         with col2:
             # Months
@@ -55,15 +62,13 @@ else:
     # SUMMARY
     # ------------------------------------------------------------
     if not filtered_df.empty:
-        total_filtered = filtered_df['סכום עסקה'].sum()
         st.caption(f"מציג {len(filtered_df)} רשומות מתוך {len(df)}")
-        # st.metric("סה\"כ לתצוגה", format_currency(total_filtered)) # Optional: Show big number
 
     # ------------------------------------------------------------
     # TABLE PREP & EDIT
     # ------------------------------------------------------------
     
-    # Pre-process for Editor (Date & Text Handling)
+    # Pre-process for Editor
     if 'תאריך רכישה' in filtered_df.columns:
         filtered_df['תאריך רכישה'] = pd.to_datetime(filtered_df['תאריך רכישה'], errors='coerce')
 
@@ -73,28 +78,17 @@ else:
     if 'קטגוריה' in filtered_df.columns:
         filtered_df['קטגוריה'] = filtered_df['קטגוריה'].fillna('').astype(str)
 
-    # Sorting
-    sort_map = {
-        'תאריך': 'תאריך רכישה',
-        'סכום': 'סכום עסקה',
-        'שם עסק': 'שם בית עסק',
-        'קטגוריה': 'קטגוריה'
-    }
-    
-    col_sort, col_dummy = st.columns([1, 4])
-    with col_sort:
-        selected_sort = st.selectbox("מיון לפי", list(sort_map.keys()), index=0)
-    
-    sort_col = sort_map[selected_sort]
-    # Keep original index for saving logic
-    df_sorted = filtered_df.sort_values(sort_col, ascending=False)
-    
-    # Columns to show
+    if 'שם בית עסק' in filtered_df.columns:
+        filtered_df['שם בית עסק'] = filtered_df['שם בית עסק'].fillna('').astype(str)
+
+    # Columns to show in RTL order (Right to Left visual, but Streamlit is LTR code)
+    # Streamlit displays columns in order of list.
+    # User checked: Date, Business, Sum, Category, Notes
     cols_to_show = ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'קטגוריה', 'הערות']
     
     # Editable Dataframe
     edited_df = st.data_editor(
-        df_sorted,
+        filtered_df, # Use filtered DF directly
         column_order=cols_to_show,
         column_config={
             "חודש": None, # Hide
@@ -114,7 +108,7 @@ else:
             ),
             "קטגוריה": st.column_config.SelectboxColumn(
                 "קטגוריה",
-                options=CATEGORIES,
+                options=combined_cats,
                 width="medium",
                 required=False
             ),
@@ -129,55 +123,58 @@ else:
         key="expenses_editor"
     )
     
+    # Save Logic (Same as before but simplified if possible)
+    # Since we edit filtered_df, we need to merge back changes to main df.
+    # Using indices is the standard way.
+    
     if st.button("שמור שינויים", type="primary"):
         try:
-            # 1. Handle Dates in Edited DF
+            # 1. Handle Dates
             if 'תאריך רכישה' in edited_df.columns:
                 edited_df['תאריך רכישה'] = edited_df['תאריך רכישה'].apply(
                     lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''
                 )
                 
-            # 2. Update Month column
+            # 2. Update Month
             edited_df['חודש'] = edited_df['תאריך רכישה'].apply(
                 lambda x: datetime.strptime(x, '%Y-%m-%d').strftime('%m/%Y') if x else ''
             )
 
-            # 3. Identify Changes
-            # Original filter indices
-            original_indices = df_sorted.index
-            # Current indices (after edits/deletes)
-            current_indices = edited_df.index
+            # 3. Update Main DF
+            # Iterate through edited rows and update main df by index
+            # This handles edits and adds/removes if index aligns
+            # Simple approach: Update existing rows, append new ones.
             
-            # Identify Deleted Rows (indices in original but not in current)
-            deleted_indices = set(original_indices) - set(current_indices)
+            # Check for deleted rows from filtered view
+            current_filtered_indices = edited_df.index
+            original_filtered_indices = filtered_df.index
             
-            # Identify Modified Rows (intersection)
-            common_indices = set(original_indices).intersection(set(current_indices))
-            
-            # Identify New Rows (in current but not in original? Streamlit might use new indices)
-            # Usually strict new rows might not have integer index if dataframe had RangeIndex.
-            # But let's assume update works on common indices.
-            
-            # A. Drop deleted
+            deleted_indices = set(original_filtered_indices) - set(current_filtered_indices)
             if deleted_indices:
                 df = df.drop(list(deleted_indices))
-                
-            # B. Update modified
-            if common_indices:
-                # We update specific columns in the main DF using the edited subset
-                # df.update(edited_df) might overwrite NaNs? Safe enough here.
-                df.update(edited_df)
-                
-            # C. Handle Additions (if any, though tough with index mismatch)
-            # Find rows in edited_df that are NOT in original_indices
-            new_rows_indices = set(current_indices) - set(original_indices)
-            if new_rows_indices:
-                new_rows = edited_df.loc[list(new_rows_indices)]
+            
+            # Update modified rows
+            df.update(edited_df)
+            
+            # Handle new rows (added safely via editor)
+            # New rows usually have new indices or none if added via UI? 
+            # Streamlit data editor adds rows with new index.
+            # If we just depend on df.update for existing indices, we miss new ones.
+            # But filtered_df might not show all rows, so we can't just replace df.
+            
+            # Ideally:
+            # 1. Drop deleted
+            # 2. Update existing
+            # 3. Append new
+            
+            # Identify purely new rows (index not in original df)
+            new_rows = edited_df[~edited_df.index.isin(df.index)]
+            if not new_rows.empty:
                 df = pd.concat([df, new_rows], ignore_index=True)
 
             save_expenses(df)
             st.success("השינויים נשמרו בהצלחה!")
-            st.rerun() # Refresh to show updated data
+            st.rerun()
             
         except Exception as e:
             st.error(f"שגיאה בשמירה: {e}")

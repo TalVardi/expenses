@@ -59,6 +59,51 @@ def save_categories(categories_list):
     with open(CATEGORIES_FILE, 'w', encoding='utf-8') as f:
         json.dump(categories_list, f, ensure_ascii=False, indent=2)
 
+# ============================================
+# AUTO-CATEGORIZATION MAPPING
+# ============================================
+MAPPING_FILE = "mapping.json"
+
+def load_mapping():
+    """Load business-to-category mapping from JSON."""
+    if os.path.exists(MAPPING_FILE):
+        try:
+            with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def save_mapping(mapping_dict):
+    """Save business-to-category mapping to JSON."""
+    with open(MAPPING_FILE, 'w', encoding='utf-8') as f:
+        json.dump(mapping_dict, f, ensure_ascii=False, indent=2)
+
+def auto_categorize_expenses(df, mapping):
+    """
+    Apply mapping to expenses dataframe.
+    Only updates rows where 'קטגוריה' is empty, NaN, or None.
+    """
+    if df.empty or not mapping:
+        return df
+    
+    # Ensure category column exists
+    if 'קטגוריה' not in df.columns:
+        df['קטגוריה'] = ''
+        
+    def get_category(row):
+        # If category already exists, keep it
+        current_cat = str(row.get('קטגוריה', '')).strip()
+        if current_cat and current_cat.lower() != 'nan' and current_cat.lower() != 'none':
+            return current_cat
+        
+        # Try to find match in mapping
+        business_name = str(row.get('שם בית עסק', '')).strip()
+        return mapping.get(business_name, '')
+
+    df['קטגוריה'] = df.apply(get_category, axis=1)
+    return df
+
 CATEGORIES = load_categories()
 
 # ============================================

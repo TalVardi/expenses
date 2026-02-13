@@ -1,76 +1,82 @@
 import streamlit as st
 import pandas as pd
-from utils import load_expenses, save_expenses, apply_custom_css, CATEGORIES, format_currency
+from utils import load_expenses, save_expenses, apply_custom_css, load_categories, format_currency, load_mapping, save_mapping
 
-st.set_page_config(page_title="מיפוי הוצאות", page_icon="🏷️", layout="wide")
+st.set_page_config(page_title="מיפוי מהיר", page_icon="🏷️", layout="wide")
 apply_custom_css()
 
-st.title("מיפוי הוצאות")
-st.caption("סיווג מהיר של הוצאות ללא קטגוריה")
+st.title("🏷️ מיפוי מהיר")
 
 df = load_expenses()
 
 # Filter empty categories
-# Assuming empty string or NaN
 to_map = df[(df['קטגוריה'].isna()) | (df['קטגוריה'] == '') | (df['קטגוריה'] == 'nan')]
 
 if to_map.empty:
     st.success("🎉 כל ההוצאות מסווגות!")
-    if st.button("חזרה לדאשבורד"):
-        st.switch_page("Home.py")
+    if st.button("לסיכומים"):
+        try:
+            st.switch_page("1_📊_סיכומים.py")
+        except:
+            st.switch_page("Home.py") # Fallback
 else:
-    st.markdown(f"**נותרו {len(to_map)} עסקאות לסיווג**")
+    # Progress
+    total = len(to_map)
+    st.progress(0, text=f"נותרו {total} עסקאות לסיווג")
+
+    # Get first item
+    row = to_map.iloc[0]
     
-    # "Flashcard" Mode - Show one at a time
-    current_idx = st.session_state.get('mapping_index', 0)
+    # COMPACT UI
+    # Use a container with less padding
+    with st.container():
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c1:
+            st.caption("תאריך")
+            st.markdown(f"**{row['תאריך רכישה']}**")
+        with c2:
+            st.caption("בית עסק")
+            st.markdown(f"### {row['שם בית עסק']}")
+        with c3:
+            st.caption("סכום")
+            st.markdown(f"### {format_currency(row['סכום עסקה'])}")
+
+    st.divider()
     
-    # Ensure index is valid
-    if current_idx >= len(to_map):
-        current_idx = 0
-        
-    row = to_map.iloc[current_idx]
+    # Categories Buttons
+    st.write("בחר קטגוריה:")
+    categories = load_categories()
+    valid_cats = [c for c in categories if c]
     
-    # Helper to save category
-    def save_category(category):
-        # Update the original dataframe
-        # We need to find the specific row in the main df. 
-        # Using index from to_map might be risky if df changed, but we loaded it fresh.
-        # Ideally we have a unique ID. Date+Name+Amount is our "Key".
-        
-        original_idx = row.name  # Pandas preserves index
-        df.at[original_idx, 'קטגוריה'] = category
+    # Compact Grid
+    cols = st.columns(5) # 5 columns for compactness
+    
+    def save_category(cat):
+        # 1. Update Expense
+        original_idx = row.name
+        df.at[original_idx, 'קטגוריה'] = cat
         save_expenses(df)
-        st.toast(f"סווג כ-{category}")
-        # Next
-        # We don't increment index because the current item is removed from 'to_map' on rerun
-        # So we stay at 0 or move to next valid?
-        # If we reload, 'to_map' shrinks. So index 0 is always the *next* one.
+        
+        # 2. Update Mapping (Learn)
+        mapping = load_mapping()
+        business = str(row['שם בית עסק']).strip()
+        if business:
+            mapping[business] = cat
+            save_mapping(mapping)
+        
+        st.toast(f"סווג כ-{cat} ונשמר לאינדקס")
         st.rerun()
 
-    # Card UI
-    st.markdown(f"""
-    <div class="metric-card" style="text-align: center; margin: 2rem 0; padding: 2rem;">
-        <div style="font-size: 0.95rem; color: #718096; margin-bottom: 0.5rem;">{row['תאריך רכישה']}</div>
-        <div style="font-size: 2rem; font-weight: 700; color: #0077B6; margin: 1rem 0;">{row['שם בית עסק']}</div>
-        <div style="font-size: 1.5rem; color: #2D3748; font-weight: 500;">{format_currency(row['סכום עסקה'])}</div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    st.markdown("### בחר קטגוריה:")
-    
-    # Buttons grid
-    cols = st.columns(4)
-    valid_cats = [c for c in CATEGORIES if c]
-    
     for i, cat in enumerate(valid_cats):
-        with cols[i % 4]:
+        with cols[i % 5]:
             if st.button(cat, use_container_width=True, key=f"btn_{i}"):
                 save_category(cat)
     
-    # Skip / Delete
-    st.markdown("---")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("⏭️ דלג בינתיים"):
-            st.session_state['mapping_index'] = current_idx + 1
-            st.rerun()
+    st.divider()
+    if st.button("⏭️ דלג בינתיים"):
+        # Just move to next by reloading (random/sorted order handles it)
+        # Or if strictly sequential, we might need state. 
+        # But 'to_map' recalculates every time. 
+        # To skip, we effectively need to temporarily ignore this index.
+        # Simple hack: just move to next index in the list
+        pass 

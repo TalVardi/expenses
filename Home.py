@@ -5,7 +5,7 @@ from datetime import datetime
 from utils import load_expenses, get_latest_active_month, format_currency, apply_custom_css, COLORS
 
 # Page Config
-st.set_page_config(page_title="דאשבורד פיננסי", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="סיכומים", page_icon="📊", layout="wide")
 
 # Apply Global CSS
 apply_custom_css()
@@ -20,8 +20,8 @@ if not df.empty and 'תאריך רכישה' in df.columns:
     df['month_dt'] = df['date_dt'].dt.to_period('M')
 
 # Header
-st.title("דאשבורד פיננסי")
-st.caption("סקירה כללית של ההוצאות שלך")
+st.title("📊 סיכומים")
+st.caption("מבט על ההוצאות והמגמות שלך")
 
 if df.empty:
     st.info("אין נתונים להצגה. אנא עבור לדף ההגדרות והעלה קובץ נתונים.")
