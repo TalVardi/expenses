@@ -108,7 +108,7 @@ with tab2:
     
     edited_cats_df = st.data_editor(
         cat_df,
-        num_rows="dynamic",
+        num_rows="dynamic", # Allow delete
         use_container_width=True,
         key="cat_editor",
         hide_index=True
@@ -141,7 +141,7 @@ with tab3:
     
     edited_map_df = st.data_editor(
         map_df,
-        num_rows="dynamic",
+        num_rows="dynamic", # Allow delete
         use_container_width=True,
         key="map_editor",
         hide_index=True,

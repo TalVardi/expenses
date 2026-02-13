@@ -78,20 +78,21 @@ else:
     if 'קטגוריה' in filtered_df.columns:
         filtered_df['קטגוריה'] = filtered_df['קטגוריה'].fillna('').astype(str)
 
-    if 'שם בית עסק' in filtered_df.columns:
-        filtered_df['שם בית עסק'] = filtered_df['שם בית עסק'].fillna('').astype(str)
-
-    # Columns to show in RTL order (Right to Left visual, but Streamlit is LTR code)
-    # Streamlit displays columns in order of list.
-    # User checked: Date, Business, Sum, Category, Notes
+    # Columns to show
+    # User Request: "date should be seen most right, notes most left"
+    # In RTL mode, Column 0 is on the Right.
     cols_to_show = ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'קטגוריה', 'הערות']
+    
+    # Default Sort in Data Editor is manual unless we pre-sort.
+    # We already "Default sort by Date - latest to earliest".
+    filtered_df = filtered_df.sort_values('תאריך רכישה', ascending=False)
     
     # Editable Dataframe
     edited_df = st.data_editor(
-        filtered_df, # Use filtered DF directly
+        filtered_df, 
         column_order=cols_to_show,
         column_config={
-            "חודש": None, # Hide
+            "חודש": None, 
             "תאריך רכישה": st.column_config.DateColumn(
                 "תאריך",
                 format="DD/MM/YYYY",
@@ -104,7 +105,8 @@ else:
             "סכום עסקה": st.column_config.NumberColumn(
                 "סכום",
                 format="₪%.2f",
-                width="small"
+                width="small",
+                step=0.01
             ),
             "קטגוריה": st.column_config.SelectboxColumn(
                 "קטגוריה",
@@ -117,64 +119,70 @@ else:
                 width="medium"
             )
         },
-        use_container_width=True,
-        num_rows="dynamic",
+        use_container_width=True, # Full width
+        num_rows="dynamic",       # Enables Add/Delete rows
         hide_index=True,
         key="expenses_editor"
     )
     
-    # Save Logic (Same as before but simplified if possible)
-    # Since we edit filtered_df, we need to merge back changes to main df.
-    # Using indices is the standard way.
+    # In 'num_rows="dynamic"', the user deletes rows in the UI, and they disappear from 'edited_df'.
+    # We detect deletions by checking missing indices.
     
     if st.button("שמור שינויים", type="primary"):
         try:
             # 1. Handle Dates
             if 'תאריך רכישה' in edited_df.columns:
-                edited_df['תאריך רכישה'] = edited_df['תאריך רכישה'].apply(
-                    lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else ''
-                )
+                edited_df['תאריך רכישה'] = pd.to_datetime(edited_df['תאריך רכישה']).dt.strftime('%Y-%m-%d')
                 
             # 2. Update Month
             edited_df['חודש'] = edited_df['תאריך רכישה'].apply(
                 lambda x: datetime.strptime(x, '%Y-%m-%d').strftime('%m/%Y') if x else ''
             )
+            
+            # 3. Update Categories/Biz Strings (Fix mixed types)
+            for col in ['קטגוריה', 'שם בית עסק', 'הערות']:
+                if col in edited_df.columns:
+                    edited_df[col] = edited_df[col].astype(str)
 
-            # 3. Update Main DF
-            # Iterate through edited rows and update main df by index
-            # This handles edits and adds/removes if index aligns
-            # Simple approach: Update existing rows, append new ones.
+            # 4. Integrate Changes
+            # Get current indices from editor
+            current_indices = edited_df.index
             
-            # Check for deleted rows from filtered view
-            current_filtered_indices = edited_df.index
-            original_filtered_indices = filtered_df.index
+            # Original DF (GLOBAL DF) needs to be updated.
+            # We must be careful: data editor returns a new dataframe with potentially new indices for added rows.
+            # But we are editing `filtered_df`. 
+            # If we delete a row in filtered view, we want to delete it from global `df`.
             
-            deleted_indices = set(original_filtered_indices) - set(current_filtered_indices)
+            # Map filtered indices to global indices?
+            # filtered_df.index contains global indices.
+            
+            # A. Deletions
+            # Indices present in original filtered_df but missing in edited_df
+            deleted_indices = set(filtered_df.index) - set(current_indices)
             if deleted_indices:
                 df = df.drop(list(deleted_indices))
-            
-            # Update modified rows
-            df.update(edited_df)
-            
-            # Handle new rows (added safely via editor)
-            # New rows usually have new indices or none if added via UI? 
-            # Streamlit data editor adds rows with new index.
-            # If we just depend on df.update for existing indices, we miss new ones.
-            # But filtered_df might not show all rows, so we can't just replace df.
-            
-            # Ideally:
-            # 1. Drop deleted
-            # 2. Update existing
-            # 3. Append new
-            
-            # Identify purely new rows (index not in original df)
-            new_rows = edited_df[~edited_df.index.isin(df.index)]
+                
+            # B. Updates
+            # Common indices
+            common_indices = list(set(filtered_df.index).intersection(set(current_indices)))
+            if common_indices:
+                # Update specific columns
+                for col in cols_to_show:
+                    df.loc[common_indices, col] = edited_df.loc[common_indices, col]
+                # Also update derived 'חודש'
+                df.loc[common_indices, 'חודש'] = edited_df.loc[common_indices, 'חודש']
+                
+            # C. Additions
+            # Indices in edited_df that are NOT in filtered_df.index
+            # Streamlit usually resets index or uses RangeIndex for new rows.
+            # If strictly new rows:
+            new_rows = edited_df[~edited_df.index.isin(filtered_df.index)]
             if not new_rows.empty:
                 df = pd.concat([df, new_rows], ignore_index=True)
-
+ 
             save_expenses(df)
             st.success("השינויים נשמרו בהצלחה!")
-            st.rerun()
+            st.rerun() 
             
         except Exception as e:
             st.error(f"שגיאה בשמירה: {e}")

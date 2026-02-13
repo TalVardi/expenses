@@ -303,24 +303,29 @@ def auto_categorize(new_df: pd.DataFrame, existing_df: pd.DataFrame) -> pd.DataF
 # CSS INJECTION
 # ============================================
 
-def get_latest_active_month(df: pd.DataFrame, min_transactions: int = 15) -> str:
+def get_latest_active_month(df, min_transactions=20):
     """
     Get the latest month that has at least `min_transactions`.
     Fallback to the actual last month in data if none meet criteria.
     If no data, return current month.
     """
     if df.empty or 'חודש' not in df.columns:
-        return get_current_month_str()
+        return datetime.now().strftime('%m/%Y')
         
     # Count per month
     counts = df['חודש'].value_counts()
     
-    # Filter
+    # Filter months with enough transactions
     active_months = counts[counts >= min_transactions].index.tolist()
     
+    def parse_month(m):
+        try:
+            return datetime.strptime(m, '%m/%Y')
+        except:
+            return datetime.min
+
     if not active_months:
-        # Fallback to absolute last month in data
-        # Sort by date
+        # Fallback to absolute last month in data (based on date column)
         if 'תאריך רכישה' in df.columns:
             try:
                 # Convert to datetime to find max
@@ -330,17 +335,18 @@ def get_latest_active_month(df: pd.DataFrame, min_transactions: int = 15) -> str
                     return latest_date.strftime('%m/%Y')
             except:
                 pass
-        return get_current_month_str()
         
-    # Parse months to sort correctly
-    try:
-        def parse_month(m):
-            return datetime.strptime(m, '%m/%Y')
-            
-        sorted_active = sorted(active_months, key=parse_month, reverse=True)
-        return sorted_active[0]
-    except:
-        return active_months[0]
+        # Fallback to sorting 'Month' strings if date column fails
+        all_months = df['חודש'].unique().tolist()
+        if all_months:
+             sorted_all = sorted(all_months, key=parse_month, reverse=True)
+             return sorted_all[0]
+             
+        return datetime.now().strftime('%m/%Y')
+        
+    # Sort active months to get the latest one
+    sorted_active = sorted(active_months, key=parse_month, reverse=True)
+    return sorted_active[0]
 
 
 # ============================================
