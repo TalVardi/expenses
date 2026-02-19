@@ -23,109 +23,245 @@ COLORS = {
 }
 
 import json
+import requests
 
 # ============================================
-# CONSTANTS & CONFIG
+# SUPABASE CONNECTOR (VIA REST API)
 # ============================================
-EXPENSES_FILE = "expenses.csv"
-CATEGORIES_FILE = "categories.json"
-COLUMNS = ['חודש', 'תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'קטגוריה', 'הערות']
+class SupabaseConnector:
+    def __init__(self):
+        self.base_url = ""
+        self.headers = {}
+        self.connected = False
+        self._connect()
 
-DEFAULT_CATEGORIES = [
-    'מזון וקניות בית',
-    'אחזקת רכב',
-    'דלק ונסיעות',
-    'בילויים ויציאות משותפות',
-    'קפה ואוכל בחוץ',
-    'חשבונות דירה',
-    'תקשורת',
-    'חוגים ותחביבים',
-    'ביטוחים ובריאות',
-    'שונות'
-]
-
-def load_categories():
-    """Load categories from JSON or return defaults."""
-    if os.path.exists(CATEGORIES_FILE):
+    def _connect(self):
         try:
-            with open(CATEGORIES_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            pass
-    return DEFAULT_CATEGORIES
+            if "supabase" in st.secrets:
+                self.base_url = st.secrets["supabase"]["SUPABASE_URL"]
+                key = st.secrets["supabase"]["SUPABASE_KEY"]
+                self.headers = {
+                    "apikey": key,
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal"
+                }
+                self.connected = True
+            else:
+                pass # No secrets, use local
+        except Exception as e:
+            print(f"Supabase Connection Error: {e}")
+
+    # --- EXPENSES ---
+    def load_expenses(self):
+        if self.connected:
+            try:
+                url = f"{self.base_url}/rest/v1/expenses?select=*"
+                response = requests.get(url, headers=self.headers)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    df = pd.DataFrame(data)
+                    
+                    if not df.empty:
+                        # Map English DB cols to Hebrew DF cols
+                        rename_map = {
+                            'date': 'תאריך רכישה',
+                            'business': 'שם בית עסק',
+                            'amount': 'סכום עסקה',
+                            'category': 'קטגוריה',
+                            'notes': 'הערות',
+                            'month': 'חודש'
+                        }
+                        df = df.rename(columns=rename_map)
+                        
+                        # Ensure all standard columns exist
+                        for col in COLUMNS:
+                            if col not in df.columns:
+                                df[col] = ''
+                        
+                        return df[COLUMNS]
+                    else:
+                        # Return empty DF with correct columns if table is empty
+                        return pd.DataFrame(columns=COLUMNS)
+                else:
+                    print(f"Error loading expenses: {response.status_code} {response.text}")
+            except Exception as e:
+                print(f"Error reading Expenses from Supabase: {e}")
+                pass
+        return self._load_local_expenses()
+
+    def save_expenses(self, df):
+        if self.connected:
+            try:
+                # 1. Convert DF to Records (English keys)
+                records = []
+                for _, row in df.iterrows():
+                    # Handle NaN/None
+                    row = row.where(pd.notnull(row), None)
+                    
+                    records.append({
+                        'date': str(row.get('תאריך רכישה', '')),
+                        'business': str(row.get('שם בית עסק', '')),
+                        'amount': float(row.get('סכום עסקה', 0)) if row.get('סכום עסקה') else 0.0,
+                        'category': str(row.get('קטגוריה', '')),
+                        'notes': str(row.get('הערות', '')),
+                        'month': str(row.get('חודש', ''))
+                    })
+                
+                # 2. Delete all (Truncate-like)
+                # Requires 'id' column and policy
+                url = f"{self.base_url}/rest/v1/expenses"
+                try:
+                    requests.delete(f"{url}?id=neq.0", headers=self.headers)
+                except:
+                    pass
+
+                # 3. Insert all (Chunking)
+                chunk_size = 1000
+                for i in range(0, len(records), chunk_size):
+                    chunk = records[i:i + chunk_size]
+                    requests.post(url, headers=self.headers, json=chunk)
+                    
+                return
+            except Exception as e:
+                print(f"Error saving Expenses to Supabase: {e}")
+        self._save_local_expenses(df)
+
+    # --- CATEGORIES ---
+    def load_categories(self):
+        if self.connected:
+            try:
+                url = f"{self.base_url}/rest/v1/categories?select=name"
+                response = requests.get(url, headers=self.headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data:
+                        return [item['name'] for item in data]
+            except:
+                pass
+        return self._load_local_categories()
+
+    def save_categories(self, categories_list):
+        if self.connected:
+            try:
+                url = f"{self.base_url}/rest/v1/categories"
+                 # Delete all
+                requests.delete(f"{url}?name=neq.PLACEHOLDER", headers=self.headers)
+                
+                # Insert
+                data = [{'name': c} for c in categories_list]
+                requests.post(url, headers=self.headers, json=data)
+                return
+            except Exception as e:
+                print(f"Error saving categories: {e}")
+        self._save_local_categories(categories_list)
+
+    # --- MAPPING ---
+    def load_mapping(self):
+        if self.connected:
+            try:
+                url = f"{self.base_url}/rest/v1/mapping?select=*"
+                response = requests.get(url, headers=self.headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    mapping = {}
+                    for r in data:
+                        b = str(r.get('business', '')).strip()
+                        c = str(r.get('category', '')).strip()
+                        if b and c:
+                            mapping[b] = c
+                    return mapping
+            except:
+                pass
+        return self._load_local_mapping()
+
+    def save_mapping(self, mapping_dict):
+        if self.connected:
+            try:
+                url = f"{self.base_url}/rest/v1/mapping"
+                # Delete all
+                requests.delete(f"{url}?business=neq.PLACEHOLDER", headers=self.headers)
+                
+                # Insert
+                data = [{'business': k, 'category': v} for k, v in mapping_dict.items()]
+                
+                # Chunking
+                chunk_size = 1000
+                for i in range(0, len(data), chunk_size):
+                    chunk = data[i:i + chunk_size]
+                    requests.post(url, headers=self.headers, json=chunk)
+                return
+            except:
+                pass
+        self._save_local_mapping(mapping_dict)
+
+
+    # --- LOCAL FALLBACKS ---
+    def _load_local_expenses(self):
+        try:
+            df = pd.read_csv(EXPENSES_FILE, encoding='utf-8-sig')
+            for col in COLUMNS:
+                if col not in df.columns:
+                    df[col] = ''
+            return df[COLUMNS]
+        except FileNotFoundError:
+            return pd.DataFrame(columns=COLUMNS)
+
+    def _save_local_expenses(self, df):
+        df.to_csv(EXPENSES_FILE, index=False, encoding='utf-8-sig')
+
+    def _load_local_categories(self):
+        if os.path.exists(CATEGORIES_FILE):
+            try:
+                with open(CATEGORIES_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
+        return DEFAULT_CATEGORIES
+
+    def _save_local_categories(self, categories_list):
+        with open(CATEGORIES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(categories_list, f, ensure_ascii=False, indent=2)
+
+    def _load_local_mapping(self):
+        if os.path.exists(MAPPING_FILE):
+            try:
+                with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {}
+
+    def _save_local_mapping(self, mapping_dict):
+        with open(MAPPING_FILE, 'w', encoding='utf-8') as f:
+            json.dump(mapping_dict, f, ensure_ascii=False, indent=2)
+
+
+# Initialize Global Connector
+db = SupabaseConnector()
+
+
+# ============================================
+# DATA ACCESS FUNCTIONS (WRAPPERS)
+# ============================================
+def load_categories():
+    return db.load_categories()
 
 def save_categories(categories_list):
-    """Save categories to JSON."""
-    with open(CATEGORIES_FILE, 'w', encoding='utf-8') as f:
-        json.dump(categories_list, f, ensure_ascii=False, indent=2)
-
-# ============================================
-# AUTO-CATEGORIZATION MAPPING
-# ============================================
-MAPPING_FILE = "mapping.json"
+    db.save_categories(categories_list)
 
 def load_mapping():
-    """Load business-to-category mapping from JSON."""
-    if os.path.exists(MAPPING_FILE):
-        try:
-            with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
+    return db.load_mapping()
 
 def save_mapping(mapping_dict):
-    """Save business-to-category mapping to JSON."""
-    with open(MAPPING_FILE, 'w', encoding='utf-8') as f:
-        json.dump(mapping_dict, f, ensure_ascii=False, indent=2)
-
-def auto_categorize_expenses(df, mapping):
-    """
-    Apply mapping to expenses dataframe.
-    Only updates rows where 'קטגוריה' is empty, NaN, or None.
-    """
-    if df.empty or not mapping:
-        return df
-    
-    # Ensure category column exists
-    if 'קטגוריה' not in df.columns:
-        df['קטגוריה'] = ''
-        
-    def get_category(row):
-        # If category already exists, keep it
-        current_cat = str(row.get('קטגוריה', '')).strip()
-        if current_cat and current_cat.lower() != 'nan' and current_cat.lower() != 'none':
-            return current_cat
-        
-        # Try to find match in mapping
-        business_name = str(row.get('שם בית עסק', '')).strip()
-        return mapping.get(business_name, '')
-
-    df['קטגוריה'] = df.apply(get_category, axis=1)
-    return df
-
-CATEGORIES = load_categories()
-
-# ============================================
-# HELPER FUNCTIONS - DATA
-# ============================================
+    db.save_mapping(mapping_dict)
 
 def load_expenses() -> pd.DataFrame:
-    """Load expenses from CSV file, create empty DataFrame if not exists."""
-    try:
-        df = pd.read_csv(EXPENSES_FILE, encoding='utf-8-sig')
-        # Ensure all columns exist
-        for col in COLUMNS:
-            if col not in df.columns:
-                df[col] = ''
-        return df[COLUMNS]
-    except FileNotFoundError:
-        return pd.DataFrame(columns=COLUMNS)
-
+    return db.load_expenses()
 
 def save_expenses(df: pd.DataFrame) -> None:
-    """Save expenses DataFrame to CSV file."""
-    df.to_csv(EXPENSES_FILE, index=False, encoding='utf-8-sig')
+    db.save_expenses(df)
 
 
 def format_currency(amount: float) -> str:
