@@ -22,6 +22,19 @@ COLORS = {
     'border': '#E2E8F0',        # Light Gray Border
 }
 
+# Constants
+EXPENSES_FILE = "expenses.csv"
+CATEGORIES_FILE = "categories.json"
+MAPPING_FILE = "mapping.json"
+
+COLUMNS = ['חודש', 'תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'קטגוריה', 'הערות']
+
+DEFAULT_CATEGORIES = [
+    "אוכל", "סופר", "דלק", "חשבונות", "ביטוח", 
+    "משכנתא/שכירות", "חינוך", "פנאי", "בגדים", 
+    "תחבורה", "בריאות", "אחר"
+]
+
 import json
 import requests
 
@@ -409,7 +422,7 @@ def normalize_uploaded_file(uploaded_file) -> pd.DataFrame:
     return normalized
 
 
-def auto_categorize(new_df: pd.DataFrame, existing_df: pd.DataFrame) -> pd.DataFrame:
+def auto_categorize_expenses(new_df: pd.DataFrame, existing_df: pd.DataFrame) -> pd.DataFrame:
     """Auto-categorize new entries based on existing business names."""
     if existing_df.empty:
         return new_df
