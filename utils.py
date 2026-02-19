@@ -70,11 +70,36 @@ class SupabaseConnector:
         if self.connected:
             try:
                 url = f"{self.base_url}/rest/v1/expenses?select=*"
-                response = requests.get(url, headers=self.headers)
+                all_data = []
+                offset = 0
+                limit = 1000
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    df = pd.DataFrame(data)
+                while True:
+                    # Method 1: Range Header (Standard PostgREST)
+                    # headers = self.headers.copy()
+                    # headers["Range"] = f"{offset}-{offset + limit - 1}"
+                    # response = requests.get(url, headers=headers)
+                    
+                    # Method 2: Limit/Offset Params (Simpler for debugging)
+                    paged_url = f"{url}&limit={limit}&offset={offset}"
+                    response = requests.get(paged_url, headers=self.headers)
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        if not data:
+                            break
+                        all_data.extend(data)
+                        
+                        if len(data) < limit:
+                            break
+                        
+                        offset += limit
+                    else:
+                        print(f"Error loading expenses: {response.status_code} {response.text}")
+                        break
+                
+                if all_data:
+                    df = pd.DataFrame(all_data)
                     
                     if not df.empty:
                         # Map English DB cols to Hebrew DF cols
@@ -94,11 +119,12 @@ class SupabaseConnector:
                                 df[col] = ''
                         
                         return df[COLUMNS]
-                    else:
-                        # Return empty DF with correct columns if table is empty
-                        return pd.DataFrame(columns=COLUMNS)
-                else:
-                    print(f"Error loading expenses: {response.status_code} {response.text}")
+                
+                # If we got here, either empty or error handled above.
+                if not all_data:
+                     # Check if it was just empty table vs error
+                     return pd.DataFrame(columns=COLUMNS)
+
             except Exception as e:
                 print(f"Error reading Expenses from Supabase: {e}")
                 pass
@@ -146,11 +172,26 @@ class SupabaseConnector:
         if self.connected:
             try:
                 url = f"{self.base_url}/rest/v1/categories?select=name"
-                response = requests.get(url, headers=self.headers)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data:
-                        return [item['name'] for item in data]
+                all_data = []
+                offset = 0
+                limit = 1000
+                
+                while True:
+                    paged_url = f"{url}&limit={limit}&offset={offset}"
+                    response = requests.get(paged_url, headers=self.headers)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if not data:
+                            break
+                        all_data.extend(data)
+                        if len(data) < limit:
+                            break
+                        offset += limit
+                    else:
+                        break
+                
+                if all_data:
+                    return [item['name'] for item in all_data]
             except:
                 pass
         return self._load_local_categories()
@@ -175,11 +216,27 @@ class SupabaseConnector:
         if self.connected:
             try:
                 url = f"{self.base_url}/rest/v1/mapping?select=*"
-                response = requests.get(url, headers=self.headers)
-                if response.status_code == 200:
-                    data = response.json()
+                all_data = []
+                offset = 0
+                limit = 1000
+                
+                while True:
+                    paged_url = f"{url}&limit={limit}&offset={offset}"
+                    response = requests.get(paged_url, headers=self.headers)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if not data:
+                            break
+                        all_data.extend(data)
+                        if len(data) < limit:
+                            break
+                        offset += limit
+                    else:
+                        break
+
+                if all_data:
                     mapping = {}
-                    for r in data:
+                    for r in all_data:
                         b = str(r.get('business', '')).strip()
                         c = str(r.get('category', '')).strip()
                         if b and c:
