@@ -114,6 +114,10 @@ class SupabaseConnector:
                         }
                         df = df.rename(columns=rename_map)
                         
+                        # Defensive: Replace "None" strings with empty strings globally in DF
+                        # This fixes display issues even if DB has bad data
+                        df.replace(['None', 'nan', 'NONE', 'NaN'], '', inplace=True)
+                        
                         # Ensure all standard columns exist
                         for col in COLUMNS:
                             if col not in df.columns:
