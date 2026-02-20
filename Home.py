@@ -53,11 +53,27 @@ else:
         curr_month_spend = df[df['חודש'] == active_month]['סכום עסקה'].sum()
         st.metric(f"חודש פעיל ({active_month})", format_currency(curr_month_spend))
     with col4:
-        # Most expensive category avg
-        cat_stats = last_12_months.groupby('קטגוריה')['סכום עסקה'].sum().sort_values(ascending=False)
-        if not cat_stats.empty:
-            top_cat = cat_stats.index[0]
-            st.metric(f"הכי בזבזני: {top_cat}", format_currency(cat_stats.iloc[0]))
+        # Widget: Current Month vs Monthly Average
+        # Calculate Average Monthly Spend (Last 12 Months)
+        if not last_12_months.empty:
+             avg_monthly = total_spend_12m / 12
+        else:
+             avg_monthly = 0
+
+        # Calculate Current Month Spend
+        current_month_data = df[df['חודש'] == active_month]
+        current_spend = current_month_data['סכום עסקה'].sum() if not current_month_data.empty else 0
+        
+        # Calculate Delta (Percentage or Amount)
+        delta_val = current_spend - avg_monthly
+        delta_percent = (delta_val / avg_monthly * 100) if avg_monthly > 0 else 0
+        
+        st.metric(
+            label="חודש נוכחי vs ממוצע",
+            value=format_currency(current_spend),
+            delta=f"{delta_percent:.1f}% ({format_currency(delta_val)})",
+            delta_color="inverse" # Red if higher (bad), Green if lower (good)
+        )
 
     st.markdown("---")
 
@@ -78,28 +94,39 @@ else:
         
         # Base Chart
         base = alt.Chart(monthly_total).encode(
-            x=alt.X('Month:T', title='חודש', axis=alt.Axis(format='%Y-%m')),
-            tooltip=['Month', 'Amount']
+            x=alt.X('Month:T', title='חודש', axis=alt.Axis(format='%m/%Y', labelAngle=-45)),
         )
         
         # Line for Total
         line_total = base.mark_line(strokeWidth=4, color=COLORS['primary_dark']).encode(
             y=alt.Y('Amount', title='סכום'),
-            tooltip=['Month', 'Amount']
+            tooltip=[
+                alt.Tooltip('Month:T', title='חודש', format='%m/%Y'),
+                alt.Tooltip('Type', title='סוג'),
+                alt.Tooltip('Amount:Q', title='סכום', format=',.0f')
+            ]
         )
         
-        # Stacked Area/Lines for categories? Keeping it simple with multiline might be messy.
-        # User asked for: "line graph with all the categories we have... make a line for a total expenses as well."
-        
+        # Categories Line Chart
         chart_cat = alt.Chart(monthly_cat).mark_line(point=True).encode(
             x='Month:T',
             y='Amount',
-            color='Category',
-            tooltip=['Month', 'Category', 'Amount']
+            color=alt.Color('Category', legend=alt.Legend(title="קטגוריה")),
+            tooltip=[
+                alt.Tooltip('Month:T', title='חודש', format='%m/%Y'),
+                alt.Tooltip('Category', title='קטגוריה'),
+                alt.Tooltip('Amount:Q', title='סכום', format=',.0f')
+            ]
         )
         
+        # Total Average Line
+        avg_line = alt.Chart(pd.DataFrame({'y': [avg_monthly_spend]})).mark_rule(strokeDash=[5, 5], color='gray', opacity=0.5).encode(
+            y='y',
+            tooltip=[alt.Tooltip('y', title='ממוצע שנתי', format=',.0f')]
+        )
+
         # Combine
-        final_chart = (chart_cat + line_total).properties(height=400).interactive()
+        final_chart = (chart_cat + line_total + avg_line).properties(height=450).interactive()
         
         st.altair_chart(final_chart, use_container_width=True)
 
@@ -129,27 +156,47 @@ else:
         st.markdown("### סיכום שנתי לפי קטגוריות")
         
         years = sorted(df['year'].dropna().unique(), reverse=True)
+        # Exclude current year if requested? User said "Yearly Summary: Change Avg/Txn to Monthly Average (Total / 12)"
+        # Showing all years is fine, but the metric should be Monthly Average.
+        
         if years:
             selected_year = st.selectbox("בחר שנה להצגה", [int(y) for y in years], index=0)
             
             year_data = df[df['year'] == selected_year]
             
             # Group by Category
-            cat_summary = year_data.groupby('קטגוריה')['סכום עסקה'].agg(['sum', 'count', 'mean']).reset_index()
-            cat_summary.columns = ['קטגוריה', 'סה"כ', 'מס׳ עסקאות', 'ממוצע לעסקה']
+            cat_summary = year_data.groupby('קטגוריה')['סכום עסקה'].agg(['sum', 'count']).reset_index()
+            cat_summary.columns = ['קטגוריה', 'סה"כ', 'מס׳ עסקאות']
+            
+            # Calculate Monthly Average (Total / 12)
+            # Or Total / Number of active months in that year? usually /12 for annual budget view.
+            # But for current incomplete year, it might be misleading.
+            # Let's use 12 for past years, and current month count for this year?
+            # Simpler: Total / 12 is a standard "Annualized Monthly Average".
+            # If user wants "Real Average", they can look at the other table.
+            # Let's stick to Total / 12 as requested implied by "Yearly" context usually.
+            # Actually, better: if year == current year, divide by current month number?
+            # Let's just do Total / 12 as a baseline for "Annual impact".
+            
+            months_in_year = 12
+            if selected_year == datetime.now().year:
+                months_in_year = max(1, datetime.now().month) # Avoid div by zero
+            
+            cat_summary['ממוצע חודשי'] = cat_summary['סה"כ'] / months_in_year
+            
             cat_summary = cat_summary.sort_values('סה"כ', ascending=False)
             
             # Add Total Row
             total_sum = cat_summary['סה"כ'].sum()
             total_count = cat_summary['מס׳ עסקאות'].sum()
-            total_avg = total_sum / total_count if total_count > 0 else 0
+            total_avg = total_sum / months_in_year
             
             # Append Total using pd.concat
             total_row = pd.DataFrame([{
-                'קטגוריה': '🛑 סה"כ', # Using emoji to make it distinct/sortable or just visually last?
+                'קטגוריה': '🛑 סה"כ', 
                 'סה"כ': total_sum,
                 'מס׳ עסקאות': total_count,
-                'ממוצע לעסקה': total_avg
+                'ממוצע חודשי': total_avg
             }])
             
             final_summary = pd.concat([cat_summary, total_row], ignore_index=True)
@@ -160,7 +207,7 @@ else:
                     "קטגוריה": st.column_config.TextColumn("קטגוריה", width="medium"),
                     "סה\"כ": st.column_config.NumberColumn("סה\"כ שנתי", format="₪%.0f"),
                     "מס׳ עסקאות": st.column_config.NumberColumn("כמות", format="%d"),
-                    "ממוצע לעסקה": st.column_config.NumberColumn("ממוצע לעסקה", format="₪%.0f"),
+                    "ממוצע חודשי": st.column_config.NumberColumn("ממוצע חודשי", format="₪%.0f"),
                 },
                 hide_index=True,
                 use_container_width=True

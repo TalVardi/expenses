@@ -109,7 +109,8 @@ class SupabaseConnector:
                             'amount': 'סכום עסקה',
                             'category': 'קטגוריה',
                             'notes': 'הערות',
-                            'month': 'חודש'
+                            'month': 'חודש',
+                            'id': 'id'
                         }
                         df = df.rename(columns=rename_map)
                         
@@ -118,7 +119,9 @@ class SupabaseConnector:
                             if col not in df.columns:
                                 df[col] = ''
                         
-                        return df[COLUMNS]
+                        # Return standard columns + id (for updates)
+                        cols_to_return = COLUMNS + ['id'] if 'id' in df.columns else COLUMNS
+                        return df[cols_to_return]
                 
                 # If we got here, either empty or error handled above.
                 if not all_data:
@@ -136,16 +139,26 @@ class SupabaseConnector:
                 # 1. Convert DF to Records (English keys)
                 records = []
                 for _, row in df.iterrows():
-                    # Handle NaN/None
-                    row = row.where(pd.notnull(row), None)
+                    # Helper to safe string conversion
+                    def safe_str(val):
+                        if pd.isna(val) or val is None or str(val).lower() == 'nan' or str(val).lower() == 'none':
+                            return ''
+                        return str(val).strip()
                     
+                    # Helper for amount
+                    def safe_float(val):
+                        try:
+                            return float(val)
+                        except:
+                            return 0.0
+
                     records.append({
-                        'date': str(row.get('תאריך רכישה', '')),
-                        'business': str(row.get('שם בית עסק', '')),
-                        'amount': float(row.get('סכום עסקה', 0)) if row.get('סכום עסקה') else 0.0,
-                        'category': str(row.get('קטגוריה', '')),
-                        'notes': str(row.get('הערות', '')),
-                        'month': str(row.get('חודש', ''))
+                        'date': safe_str(row.get('תאריך רכישה')),
+                        'business': safe_str(row.get('שם בית עסק')),
+                        'amount': safe_float(row.get('סכום עסקה')),
+                        'category': safe_str(row.get('קטגוריה')),
+                        'notes': safe_str(row.get('הערות')),
+                        'month': safe_str(row.get('חודש'))
                     })
                 
                 # 2. Delete all (Truncate-like)

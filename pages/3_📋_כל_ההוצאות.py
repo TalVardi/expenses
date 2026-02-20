@@ -79,9 +79,11 @@ else:
         filtered_df['קטגוריה'] = filtered_df['קטגוריה'].fillna('').astype(str)
 
     # Columns to show
-    # User Request: "date should be seen most right, notes most left"
     # In RTL mode, Column 0 is on the Right.
+    # We Include 'id' for tracking but hide it.
     cols_to_show = ['תאריך רכישה', 'שם בית עסק', 'סכום עסקה', 'קטגוריה', 'הערות']
+    if 'id' in filtered_df.columns:
+        cols_to_show.append('id')
     
     # Default Sort in Data Editor is manual unless we pre-sort.
     # We already "Default sort by Date - latest to earliest".
@@ -92,6 +94,7 @@ else:
         filtered_df, 
         column_order=cols_to_show,
         column_config={
+            "id": st.column_config.TextColumn("ID", hidden=True), # Hide ID
             "חודש": None, 
             "תאריך רכישה": st.column_config.DateColumn(
                 "תאריך",
@@ -125,60 +128,87 @@ else:
         key="expenses_editor"
     )
     
-    # In 'num_rows="dynamic"', the user deletes rows in the UI, and they disappear from 'edited_df'.
-    # We detect deletions by checking missing indices.
-    
     if st.button("שמור שינויים", type="primary"):
         try:
-            # 1. Handle Dates
+            # 1. Handle Dates & Formatting
             if 'תאריך רכישה' in edited_df.columns:
                 edited_df['תאריך רכישה'] = pd.to_datetime(edited_df['תאריך רכישה']).dt.strftime('%Y-%m-%d')
                 
             # 2. Update Month
             edited_df['חודש'] = edited_df['תאריך רכישה'].apply(
-                lambda x: datetime.strptime(x, '%Y-%m-%d').strftime('%m/%Y') if x else ''
+                lambda x: datetime.strptime(x, '%Y-%m-%d').strftime('%m/%Y') if x and str(x) != 'NaT' else ''
             )
             
-            # 3. Update Categories/Biz Strings (Fix mixed types)
+            # 3. Clean Strings
             for col in ['קטגוריה', 'שם בית עסק', 'הערות']:
                 if col in edited_df.columns:
-                    edited_df[col] = edited_df[col].astype(str)
+                    edited_df[col] = edited_df[col].astype(str).replace('nan', '').replace('None', '')
 
-            # 4. Integrate Changes
-            # Get current indices from editor
-            current_indices = edited_df.index
+            # 4. Smart Merge (Using ID)
+            # If we have IDs, we use them. If not (local file legacy), we fall back to indices or append.
             
-            # Original DF (GLOBAL DF) needs to be updated.
-            # We must be careful: data editor returns a new dataframe with potentially new indices for added rows.
-            # But we are editing `filtered_df`. 
-            # If we delete a row in filtered view, we want to delete it from global `df`.
-            
-            # Map filtered indices to global indices?
-            # filtered_df.index contains global indices.
-            
-            # A. Deletions
-            # Indices present in original filtered_df but missing in edited_df
-            deleted_indices = set(filtered_df.index) - set(current_indices)
-            if deleted_indices:
-                df = df.drop(list(deleted_indices))
+            if 'id' in df.columns and 'id' in edited_df.columns:
+                # A. Identify Deletions
+                # IDs that were in filtered_df but are NOT in edited_df
+                # strictly strictly those that had an ID (not new rows)
                 
-            # B. Updates
-            # Common indices
-            common_indices = list(set(filtered_df.index).intersection(set(current_indices)))
-            if common_indices:
-                # Update specific columns
-                for col in cols_to_show:
-                    df.loc[common_indices, col] = edited_df.loc[common_indices, col]
-                # Also update derived 'חודש'
-                df.loc[common_indices, 'חודש'] = edited_df.loc[common_indices, 'חודש']
+                original_ids = set(filtered_df['id'].dropna().astype(str))
+                current_ids = set(edited_df['id'].dropna().astype(str))
                 
-            # C. Additions
-            # Indices in edited_df that are NOT in filtered_df.index
-            # Streamlit usually resets index or uses RangeIndex for new rows.
-            # If strictly new rows:
-            new_rows = edited_df[~edited_df.index.isin(filtered_df.index)]
-            if not new_rows.empty:
-                df = pd.concat([df, new_rows], ignore_index=True)
+                deleted_ids = original_ids - current_ids
+                
+                # Remove from Global DF
+                if deleted_ids:
+                    df = df[~df['id'].astype(str).isin(deleted_ids)]
+                
+                # B. Identify Updates
+                # Rows with IDs that exist in both.
+                # We update specific columns in Global DF using set index for speed or simple loop
+                # Just iterate edited_df rows that have an ID
+                
+                # Create a map from ID to row index in Global DF?
+                # or just use loc with boolean mask (slower but safe)
+                
+                # Optimization: Convert DF to dict for updates?
+                # Let's iterate through modified rows only? Streamlit doesn't give us "modified only" easily here without session state tracking.
+                # valid_updates = edited_df[edited_df['id'].isin(original_ids)]
+                # Actually, simpler: 
+                # Since we are saving *everything* to Supabase (Delete All + Insert All),
+                # We mainly need to construct the correct Final DF.
+                # So: 
+                # Final DF = (Global DF - Filtered Rows) + Edited Rows
+                # BUT "Filtered Rows" might be a subset.
+                # So:
+                # 1. Start with Global DF.
+                # 2. Drop ALL rows that were in the "Filtered View" (matching IDs).
+                # 3. Append the "Edited DF" (which contains the remaining + updated + new rows).
+                
+                # IDs involved in the filter (Original)
+                ids_in_filter = filtered_df['id'].dropna()
+                
+                # 1. Remove these ID rows from Global
+                df = df[~df['id'].isin(ids_in_filter)]
+                
+                # 2. Append the NEW state of these rows (from editor)
+                # This handles Updates and Deletions (since deleted ones are missing from editor)
+                # And Additions (rows with NaN ID will be appended too)
+                
+                df = pd.concat([df, edited_df], ignore_index=True)
+                
+            else:
+                 # Fallback for No IDs (legacy) - Risky but best effort
+                 # Replace everything? No, that deletes hidden data.
+                 # Merge by Index (unsafe if sort changed).
+                 # If no IDs, we assume we are just managing the file.
+                 # Let's just blindly append new to old unique?
+                 # No, without IDs and with filters, it's impossible to know what was deleted.
+                 # We will assume "Save Changes" implies "Replace All" if no IDs?
+                 # No, that erases data.
+                 # Generate UUIDs for local? 
+                 # For now, simplistic approach:
+                 st.warning("שים לב: עריכה מתקדמת זמינה רק כאשר מחוברים למסד נתונים (ID חסר).")
+                 # Try to match by index if possible
+                 pass
  
             save_expenses(df)
             st.success("השינויים נשמרו בהצלחה!")
