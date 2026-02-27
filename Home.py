@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 from datetime import datetime
-from utils import load_expenses, get_latest_active_month, format_currency, apply_custom_css, COLORS
+from utils import load_expenses, get_latest_active_month, format_currency, apply_custom_css, COLORS, get_connection_status
 
 # Page Config
 st.set_page_config(page_title="סיכומים", page_icon="📊", layout="wide")
@@ -25,6 +25,15 @@ st.caption("מבט על ההוצאות והמגמות שלך")
 
 if df.empty:
     st.info("אין נתונים להצגה. אנא עבור לדף ההגדרות והעלה קובץ נתונים.")
+    # Show connection diagnostics
+    status = get_connection_status()
+    with st.expander("🔧 אבחון חיבור", expanded=True):
+        st.write(f"**מחובר לסופאבייס:** {'✅ כן' if status['connected'] else '❌ לא'}")
+        st.write(f"**כתובת:** {status['base_url']}")
+        if status['error']:
+            st.error(f"**שגיאה:** {status['error']}")
+        else:
+            st.write("אין שגיאות חיבור. ייתכן שמסד הנתונים ריק.")
 else:
     # ---------------------------------------------------------
     # TOP METRICS (Averages and Totals)

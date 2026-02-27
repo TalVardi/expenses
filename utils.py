@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import re
+import time
 from datetime import datetime
 
 # ============================================
@@ -39,6 +40,13 @@ import json
 import requests
 
 # ============================================
+# RETRY / TIMEOUT SETTINGS
+# ============================================
+MAX_RETRIES = 3
+RETRY_DELAY = 1   # seconds (multiplied by attempt number)
+REQUEST_TIMEOUT = 10  # seconds
+
+# ============================================
 # SUPABASE CONNECTOR (VIA REST API)
 # ============================================
 class SupabaseConnector:
@@ -61,95 +69,115 @@ class SupabaseConnector:
                 }
                 self.connected = True
             else:
-                pass # No secrets, use local
+                pass  # No secrets, use local
         except Exception as e:
-            print(f"Supabase Connection Error: {e}")
+            st.warning(f"⚠️ שגיאת חיבור למסד נתונים: {e}")
+
+    def _request_with_retry(self, method, url, **kwargs):
+        """Make an HTTP request with retry logic and timeout."""
+        kwargs.setdefault('timeout', REQUEST_TIMEOUT)
+        kwargs.setdefault('headers', self.headers)
+        last_error = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = method(url, **kwargs)
+                if response.status_code in (200, 201, 204):
+                    return response
+                # Non-success status — retry on server errors (5xx)
+                if response.status_code >= 500 and attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (attempt + 1))
+                    continue
+                # Client error or final attempt — return as-is
+                return response
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_error = e
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (attempt + 1))
+                    continue
+                raise
+        return None  # Should not reach here
 
     # --- EXPENSES ---
     def load_expenses(self):
         if self.connected:
-            try:
-                url = f"{self.base_url}/rest/v1/expenses?select=*"
-                all_data = []
-                offset = 0
-                limit = 1000
-                
-                while True:
-                    # Method 1: Range Header (Standard PostgREST)
-                    # headers = self.headers.copy()
-                    # headers["Range"] = f"{offset}-{offset + limit - 1}"
-                    # response = requests.get(url, headers=headers)
+            for attempt in range(MAX_RETRIES):
+                try:
+                    url = f"{self.base_url}/rest/v1/expenses?select=*"
+                    all_data = []
+                    offset = 0
+                    limit = 1000
+                    fetch_error = False
                     
-                    # Method 2: Limit/Offset Params (Simpler for debugging)
-                    paged_url = f"{url}&limit={limit}&offset={offset}"
-                    response = requests.get(paged_url, headers=self.headers)
+                    while True:
+                        paged_url = f"{url}&limit={limit}&offset={offset}"
+                        response = self._request_with_retry(requests.get, paged_url)
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        if not data:
+                        if response is not None and response.status_code == 200:
+                            data = response.json()
+                            if not data:
+                                break
+                            all_data.extend(data)
+                            
+                            if len(data) < limit:
+                                break
+                            
+                            offset += limit
+                        else:
+                            status = response.status_code if response else 'No response'
+                            fetch_error = True
                             break
-                        all_data.extend(data)
-                        
-                        if len(data) < limit:
-                            break
-                        
-                        offset += limit
-                    else:
-                        print(f"Error loading expenses: {response.status_code} {response.text}")
+                    
+                    if fetch_error:
+                        if attempt < MAX_RETRIES - 1:
+                            time.sleep(RETRY_DELAY * (attempt + 1))
+                            continue
+                        st.warning(f"⚠️ שגיאה בטעינת הוצאות מהשרת (סטטוס: {status}). מנסה מקור מקומי.")
                         break
-                
-                if all_data:
-                    df = pd.DataFrame(all_data)
                     
-                    if not df.empty:
-                        # Map English DB cols to Hebrew DF cols
-                        rename_map = {
-                            'date': 'תאריך רכישה',
-                            'business': 'שם בית עסק',
-                            'amount': 'סכום עסקה',
-                            'category': 'קטגוריה',
-                            'notes': 'הערות',
-                            'month': 'חודש',
-                            'id': 'id'
-                        }
-                        df = df.rename(columns=rename_map)
+                    if all_data:
+                        df = pd.DataFrame(all_data)
                         
-                        # Defensive: Replace "None" strings with empty strings globally in DF
-                        # This fixes display issues even if DB has bad data
-                        df.replace(['None', 'nan', 'NONE', 'NaN'], '', inplace=True)
-                        
-                        # Ensure all standard columns exist
-                        for col in COLUMNS:
-                            if col not in df.columns:
-                                df[col] = ''
-                        
-                        # Return standard columns + id (for updates)
-                        cols_to_return = COLUMNS + ['id'] if 'id' in df.columns else COLUMNS
-                        return df[cols_to_return]
-                
-                # If we got here, either empty or error handled above.
-                if not all_data:
-                     # Check if it was just empty table vs error
-                     return pd.DataFrame(columns=COLUMNS)
+                        if not df.empty:
+                            rename_map = {
+                                'date': 'תאריך רכישה',
+                                'business': 'שם בית עסק',
+                                'amount': 'סכום עסקה',
+                                'category': 'קטגוריה',
+                                'notes': 'הערות',
+                                'month': 'חודש',
+                                'id': 'id'
+                            }
+                            df = df.rename(columns=rename_map)
+                            df.replace(['None', 'nan', 'NONE', 'NaN'], '', inplace=True)
+                            
+                            for col in COLUMNS:
+                                if col not in df.columns:
+                                    df[col] = ''
+                            
+                            cols_to_return = COLUMNS + ['id'] if 'id' in df.columns else COLUMNS
+                            return df[cols_to_return]
+                    
+                    if not all_data:
+                         return pd.DataFrame(columns=COLUMNS)
 
-            except Exception as e:
-                print(f"Error reading Expenses from Supabase: {e}")
-                pass
+                except Exception as e:
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                    st.warning(f"⚠️ לא ניתן לטעון הוצאות מהשרת: {e}")
+                    break
         return self._load_local_expenses()
 
     def save_expenses(self, df):
         if self.connected:
             try:
-                # 1. Convert DF to Records (English keys)
                 records = []
                 for _, row in df.iterrows():
-                    # Helper to safe string conversion
                     def safe_str(val):
                         if pd.isna(val) or val is None or str(val).lower() == 'nan' or str(val).lower() == 'none':
                             return ''
                         return str(val).strip()
                     
-                    # Helper for amount
                     def safe_float(val):
                         try:
                             return float(val)
@@ -165,122 +193,126 @@ class SupabaseConnector:
                         'month': safe_str(row.get('חודש'))
                     })
                 
-                # 2. Delete all (Truncate-like)
-                # Requires 'id' column and policy
                 url = f"{self.base_url}/rest/v1/expenses"
                 try:
-                    requests.delete(f"{url}?id=neq.0", headers=self.headers)
-                except:
+                    self._request_with_retry(requests.delete, f"{url}?id=neq.0")
+                except Exception:
                     pass
 
-                # 3. Insert all (Chunking)
                 chunk_size = 1000
                 for i in range(0, len(records), chunk_size):
                     chunk = records[i:i + chunk_size]
-                    requests.post(url, headers=self.headers, json=chunk)
+                    self._request_with_retry(requests.post, url, json=chunk)
                     
                 return
             except Exception as e:
-                print(f"Error saving Expenses to Supabase: {e}")
+                st.warning(f"⚠️ שגיאה בשמירת הוצאות: {e}")
         self._save_local_expenses(df)
 
     # --- CATEGORIES ---
     def load_categories(self):
         if self.connected:
-            try:
-                url = f"{self.base_url}/rest/v1/categories?select=name"
-                all_data = []
-                offset = 0
-                limit = 1000
-                
-                while True:
-                    paged_url = f"{url}&limit={limit}&offset={offset}"
-                    response = requests.get(paged_url, headers=self.headers)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if not data:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    url = f"{self.base_url}/rest/v1/categories?select=name"
+                    all_data = []
+                    offset = 0
+                    limit = 1000
+                    
+                    while True:
+                        paged_url = f"{url}&limit={limit}&offset={offset}"
+                        response = self._request_with_retry(requests.get, paged_url)
+                        if response is not None and response.status_code == 200:
+                            data = response.json()
+                            if not data:
+                                break
+                            all_data.extend(data)
+                            if len(data) < limit:
+                                break
+                            offset += limit
+                        else:
                             break
-                        all_data.extend(data)
-                        if len(data) < limit:
-                            break
-                        offset += limit
-                    else:
-                        break
-                
-                if all_data:
-                    return [item['name'] for item in all_data]
-            except:
-                pass
+                    
+                    if all_data:
+                        return [item['name'] for item in all_data]
+                    return self._load_local_categories()
+                except Exception as e:
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                    st.warning(f"⚠️ לא ניתן לטעון קטגוריות מהשרת: {e}")
+                    break
         return self._load_local_categories()
 
     def save_categories(self, categories_list):
         if self.connected:
             try:
                 url = f"{self.base_url}/rest/v1/categories"
-                 # Delete all
-                requests.delete(f"{url}?name=neq.PLACEHOLDER", headers=self.headers)
+                self._request_with_retry(requests.delete, f"{url}?name=neq.PLACEHOLDER")
                 
-                # Insert
                 data = [{'name': c} for c in categories_list]
-                requests.post(url, headers=self.headers, json=data)
+                self._request_with_retry(requests.post, url, json=data)
                 return
             except Exception as e:
-                print(f"Error saving categories: {e}")
+                st.warning(f"⚠️ שגיאה בשמירת קטגוריות: {e}")
         self._save_local_categories(categories_list)
 
     # --- MAPPING ---
     def load_mapping(self):
         if self.connected:
-            try:
-                url = f"{self.base_url}/rest/v1/mapping?select=*"
-                all_data = []
-                offset = 0
-                limit = 1000
-                
-                while True:
-                    paged_url = f"{url}&limit={limit}&offset={offset}"
-                    response = requests.get(paged_url, headers=self.headers)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if not data:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    url = f"{self.base_url}/rest/v1/mapping?select=*"
+                    all_data = []
+                    offset = 0
+                    limit = 1000
+                    
+                    while True:
+                        paged_url = f"{url}&limit={limit}&offset={offset}"
+                        response = self._request_with_retry(requests.get, paged_url)
+                        if response is not None and response.status_code == 200:
+                            data = response.json()
+                            if not data:
+                                break
+                            all_data.extend(data)
+                            if len(data) < limit:
+                                break
+                            offset += limit
+                        else:
                             break
-                        all_data.extend(data)
-                        if len(data) < limit:
-                            break
-                        offset += limit
-                    else:
-                        break
 
-                if all_data:
-                    mapping = {}
-                    for r in all_data:
-                        b = str(r.get('business', '')).strip()
-                        c = str(r.get('category', '')).strip()
-                        if b and c:
-                            mapping[b] = c
-                    return mapping
-            except:
-                pass
+                    if all_data:
+                        mapping = {}
+                        for r in all_data:
+                            b = str(r.get('business', '')).strip()
+                            c = str(r.get('category', '')).strip()
+                            if b and c:
+                                mapping[b] = c
+                        return mapping
+                    return self._load_local_mapping()
+                except Exception as e:
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(RETRY_DELAY * (attempt + 1))
+                        continue
+                    st.warning(f"⚠️ לא ניתן לטעון מיפויים מהשרת: {e}")
+                    break
         return self._load_local_mapping()
 
     def save_mapping(self, mapping_dict):
         if self.connected:
             try:
                 url = f"{self.base_url}/rest/v1/mapping"
-                # Delete all
-                requests.delete(f"{url}?business=neq.PLACEHOLDER", headers=self.headers)
+                self._request_with_retry(requests.delete, f"{url}?business=neq.PLACEHOLDER")
                 
-                # Insert
                 data = [{'business': k, 'category': v} for k, v in mapping_dict.items()]
                 
-                # Chunking
                 chunk_size = 1000
                 for i in range(0, len(data), chunk_size):
                     chunk = data[i:i + chunk_size]
-                    requests.post(url, headers=self.headers, json=chunk)
+                    self._request_with_retry(requests.post, url, json=chunk)
                 return
-            except:
-                pass
+            except Exception as e:
+                st.warning(f"⚠️ שגיאה בשמירת מיפויים: {e}")
         self._save_local_mapping(mapping_dict)
 
 
@@ -325,8 +357,12 @@ class SupabaseConnector:
             json.dump(mapping_dict, f, ensure_ascii=False, indent=2)
 
 
-# Initialize Global Connector
-db = SupabaseConnector()
+# Initialize Global Connector (cached to persist across reruns)
+@st.cache_resource
+def _get_connector():
+    return SupabaseConnector()
+
+db = _get_connector()
 
 
 # ============================================
@@ -346,6 +382,14 @@ def save_mapping(mapping_dict):
 
 def load_expenses() -> pd.DataFrame:
     return db.load_expenses()
+
+def get_connection_status():
+    """Return connection status info for diagnostics."""
+    return {
+        'connected': db.connected,
+        'error': db.connection_error,
+        'base_url': db.base_url[:30] + '...' if db.base_url else 'N/A'
+    }
 
 def save_expenses(df: pd.DataFrame) -> None:
     db.save_expenses(df)
