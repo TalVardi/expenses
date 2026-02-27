@@ -357,10 +357,15 @@ class SupabaseConnector:
             json.dump(mapping_dict, f, ensure_ascii=False, indent=2)
 
 
-# Initialize Global Connector (cached to persist across reruns)
-@st.cache_resource
+# Initialize Global Connector
+# NOTE: Removed @st.cache_resource because it can cache failed/None states
+# and cause persistent "no data" issues after Streamlit Cloud wake-up.
 def _get_connector():
-    return SupabaseConnector()
+    try:
+        return SupabaseConnector()
+    except Exception as e:
+        print(f"[CRITICAL] Failed to create SupabaseConnector: {e}")
+        return None
 
 db = _get_connector()
 
@@ -369,22 +374,38 @@ db = _get_connector()
 # DATA ACCESS FUNCTIONS (WRAPPERS)
 # ============================================
 def load_categories():
+    if db is None:
+        return []
     return db.load_categories()
 
 def save_categories(categories_list):
+    if db is None:
+        return
     db.save_categories(categories_list)
 
 def load_mapping():
+    if db is None:
+        return {}
     return db.load_mapping()
 
 def save_mapping(mapping_dict):
+    if db is None:
+        return
     db.save_mapping(mapping_dict)
 
 def load_expenses() -> pd.DataFrame:
+    if db is None:
+        return pd.DataFrame(columns=COLUMNS)
     return db.load_expenses()
 
 def get_connection_status():
     """Return connection status info for diagnostics."""
+    if db is None:
+        return {
+            'connected': False,
+            'error': 'SupabaseConnector failed to initialize (db is None). Check logs.',
+            'base_url': 'N/A'
+        }
     return {
         'connected': db.connected,
         'error': db.connection_error,
@@ -392,6 +413,8 @@ def get_connection_status():
     }
 
 def save_expenses(df: pd.DataFrame) -> None:
+    if db is None:
+        return
     db.save_expenses(df)
 
 
