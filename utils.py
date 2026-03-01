@@ -410,7 +410,7 @@ def get_connection_status():
         }
     return {
         'connected': db.connected,
-        'error': db.connection_error,
+        'error': getattr(db, 'connection_error', None),
         'base_url': db.base_url[:30] + '...' if db.base_url else 'N/A'
     }
 
