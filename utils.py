@@ -54,6 +54,7 @@ class SupabaseConnector:
         self.base_url = ""
         self.headers = {}
         self.connected = False
+        self.connection_error = None
         self._connect()
 
     def _connect(self):
@@ -69,8 +70,9 @@ class SupabaseConnector:
                 }
                 self.connected = True
             else:
-                pass  # No secrets, use local
+                self.connection_error = "No 'supabase' section in st.secrets"
         except Exception as e:
+            self.connection_error = str(e)
             st.warning(f"⚠️ שגיאת חיבור למסד נתונים: {e}")
 
     def _request_with_retry(self, method, url, **kwargs):
